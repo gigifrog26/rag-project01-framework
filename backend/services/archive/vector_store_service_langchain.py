@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from enum import Enum
 import json
+from re import search
 from typing import List, Dict, Any
 import logging
 from pathlib import Path
@@ -133,7 +134,8 @@ class VectorStoreService:
             vector_schema = {
                 "dim": first_embedding,
                 "index_type": self._get_milvus_index_type(config.index_mode),
-                "metric_type": "COSINE",
+                # "metric_type": "COSINE",
+                "metric_type": "L2",
                 "params": self._get_milvus_index_params(config.index_mode)
             }
             
@@ -167,7 +169,8 @@ class VectorStoreService:
                 connection_args={"uri": config.milvus_uri},
                 embedding_function=None,  # 我们已经有了embeddings，不需要embedding function
                 index_params=vector_schema,
-                search_params={"metric_type": "COSINE"},
+                # search_params={"metric_type": "COSINE"},
+                search_params={"metric_type": "L2"},
                 consistency_level="Strong"
             )
             

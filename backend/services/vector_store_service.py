@@ -6,7 +6,9 @@ import logging
 from pathlib import Path
 from pymilvus import connections, utility
 from pymilvus import Collection, DataType, FieldSchema, CollectionSchema
-from utils.config import VectorDBProvider, MILVUS_CONFIG  # Updated import
+from utils.config import VectorDBProvider, MILVUS_CONFIG, CHROMA_CONFIG  # Updated import
+from chromadb import Client, Settings, PersistentClient
+from chromadb.config import Settings as ChromaSettings
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ class VectorDBConfig:
         self.provider = provider
         self.index_mode = index_mode
         self.milvus_uri = MILVUS_CONFIG["uri"]
+        self.chroma_settings = CHROMA_CONFIG  # 新增Chroma配置
 
     def _get_milvus_index_type(self, index_mode: str) -> str:
         """
@@ -61,7 +64,14 @@ class VectorStoreService:
         self.initialized_dbs = {}
         # 确保存储目录存在
         os.makedirs("03-vector-store", exist_ok=True)
-    
+        # 初始化Chroma客户端
+        # self.chroma_client = Client(Settings(
+        #     persist_directory=CHROMA_CONFIG["persist_directory"],
+        #     anonymized_telemetry=False
+        # ))
+        self.chroma_client = PersistentClient(path=CHROMA_CONFIG["persist_directory"])
+
+
     def _get_milvus_index_type(self, config: VectorDBConfig) -> str:
         """
         从配置对象获取Milvus索引类型
@@ -86,25 +96,61 @@ class VectorStoreService:
         """
         return config._get_milvus_index_params(config.index_mode)
     
-    def index_embeddings(self, embedding_file: str, config: VectorDBConfig) -> Dict[str, Any]:
-        """
-        将嵌入向量索引到向量数据库
-        
-        参数:
-            embedding_file: 嵌入向量文件路径
-            config: 向量数据库配置对象
+    def _index_to_chroma(self, embeddings_data: Dict[str, Any], config: VectorDBConfig) -> Dict[str, Any]:
+        try:
+            # 使用文件名作为collection名称
+            filename = embeddings_data.get("filename", "")
+            collection_name = f"doc_{filename.replace('.pdf', '')}"
             
-        返回:
-            索引结果信息字典
-        """
+            # 创建或获取collection
+            collection = self.chroma_client.get_or_create_collection(collection_name)
+            logger.info("Using chroma collection: %s", collection_name)
+            # 准备数据
+            documents = []
+            embeddings = []
+            metadatas = []
+            ids = []
+            
+            for idx, emb in enumerate(embeddings_data["embeddings"]):
+                documents.append(emb["metadata"]["content"])
+                embeddings.append([float(x) for x in emb.get("embedding", [])])              
+                metadatas.append({
+                    "document_name": filename,
+                    "chunk_id": emb["metadata"]["chunk_id"],
+                    "page_number": emb["metadata"]["page_number"],
+                    "word_count": emb["metadata"]["word_count"],
+                    "embedding_provider": emb["metadata"]["embedding_provider"],
+                    "embedding_model": emb["metadata"]["embedding_model"]
+                })
+                ids.append(str(idx))
+            
+            # 添加数据到collection
+            collection.add(
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
+            )
+            
+            logger.info("Indexed %d vectors to Chroma collection: %s", len(ids), collection_name)
+            return {
+                "index_size": len(ids),
+                "collection_name": collection_name
+            }
+            
+        except Exception as e:
+            logger.error(f"Error indexing to Chroma: {str(e)}")
+            raise
+
+    def index_embeddings(self, embedding_file: str, config: VectorDBConfig) -> Dict[str, Any]:
         start_time = datetime.now()
         
-        # 读取embedding文件
         embeddings_data = self._load_embeddings(embedding_file)
         
-        # 根据不同的数据库进行索引
         if config.provider == VectorDBProvider.MILVUS:
             result = self._index_to_milvus(embeddings_data, config)
+        elif config.provider == VectorDBProvider.CHROMA:  # 新增Chroma支持
+            result = self._index_to_chroma(embeddings_data, config)
         
         end_time = datetime.now()
         processing_time = (end_time - start_time).total_seconds()
@@ -117,6 +163,61 @@ class VectorStoreService:
             "processing_time": processing_time,
             "collection_name": result.get("collection_name", "N/A")
         }
+
+    # 添加Chroma的集合管理方法
+    def list_collections(self, provider: str) -> List[str]:
+        if provider == VectorDBProvider.MILVUS:
+            try:
+                connections.connect(alias="default", uri=MILVUS_CONFIG["uri"])
+                collections = utility.list_collections()
+                return collections
+            finally:
+                connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA:
+            return [col.name for col in self.chroma_client.list_collections()]
+        return []
+
+    def delete_collection(self, provider: str, collection_name: str) -> bool:
+        if provider == VectorDBProvider.MILVUS:
+            try:
+                connections.connect(alias="default", uri=MILVUS_CONFIG["uri"])
+                utility.drop_collection(collection_name)
+                return True
+            finally:
+                connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA:
+            try:
+                self.chroma_client.delete_collection(collection_name)
+                return True
+            except Exception as e:
+                logger.error(f"Error deleting Chroma collection: {str(e)}")
+                return False
+        return False
+
+    def get_collection_info(self, provider: str, collection_name: str) -> Dict[str, Any]:
+        if provider == VectorDBProvider.MILVUS:
+            try:
+                connections.connect(alias="default", uri=MILVUS_CONFIG["uri"])
+                collection = Collection(collection_name)
+                return {
+                    "name": collection_name,
+                    "num_entities": collection.num_entities,
+                    "schema": collection.schema.to_dict()
+                }
+            finally:
+                connections.disconnect("default")
+        elif provider == VectorDBProvider.CHROMA:
+            try:
+                collection = self.chroma_client.get_collection(collection_name)
+                return {
+                    "name": collection_name,
+                    "num_entities": collection.count(),
+                    "metadata": collection.metadata
+                }
+            except Exception as e:
+                logger.error(f"Error getting Chroma collection info: {str(e)}")
+                return {}
+        return {}
     
     def _load_embeddings(self, file_path: str) -> Dict[str, Any]:
         """
@@ -169,6 +270,7 @@ class VectorStoreService:
             embedding_provider = embeddings_data.get("embedding_provider", "unknown")
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             collection_name = f"{base_name}_{embedding_provider}_{timestamp}"
+            collection_name = collection_name.replace('-', '_')
             
             # 连接到Milvus
             connections.connect(
@@ -195,7 +297,7 @@ class VectorStoreService:
                 {"name": "page_range", "dtype": "VARCHAR", "max_length": 10},
                 # {"name": "chunking_method", "dtype": "VARCHAR", "max_length": 50},
                 {"name": "embedding_provider", "dtype": "VARCHAR", "max_length": 50},
-                {"name": "embedding_model", "dtype": "VARCHAR", "max_length": 50},
+                {"name": "embedding_model", "dtype": "VARCHAR", "max_length": 100},
                 {"name": "embedding_timestamp", "dtype": "VARCHAR", "max_length": 50},
                 {
                     "name": "vector",
@@ -266,6 +368,7 @@ class VectorStoreService:
             # 创建索引
             index_params = {
                 "metric_type": "COSINE",
+                # "metric_type": "L2",  # 使用 L2 距离作为默认值
                 "index_type": self._get_milvus_index_type(config),
                 "params": self._get_milvus_index_params(config)
             }
@@ -283,66 +386,3 @@ class VectorStoreService:
         
         finally:
             connections.disconnect("default")
-
-    def list_collections(self, provider: str) -> List[str]:
-        """
-        列出指定提供商的所有集合
-        
-        参数:
-            provider: 向量数据库提供商
-            
-        返回:
-            集合名称列表
-        """
-        if provider == VectorDBProvider.MILVUS:
-            try:
-                connections.connect(alias="default", uri=MILVUS_CONFIG["uri"])
-                collections = utility.list_collections()
-                return collections
-            finally:
-                connections.disconnect("default")
-        return []
-
-    def delete_collection(self, provider: str, collection_name: str) -> bool:
-        """
-        删除指定的集合
-        
-        参数:
-            provider: 向量数据库提供商
-            collection_name: 集合名称
-            
-        返回:
-            是否删除成功
-        """
-        if provider == VectorDBProvider.MILVUS:
-            try:
-                connections.connect(alias="default", uri=MILVUS_CONFIG["uri"])
-                utility.drop_collection(collection_name)
-                return True
-            finally:
-                connections.disconnect("default")
-        return False
-
-    def get_collection_info(self, provider: str, collection_name: str) -> Dict[str, Any]:
-        """
-        获取指定集合的信息
-        
-        参数:
-            provider: 向量数据库提供商
-            collection_name: 集合名称
-            
-        返回:
-            集合信息字典
-        """
-        if provider == VectorDBProvider.MILVUS:
-            try:
-                connections.connect(alias="default", uri=MILVUS_CONFIG["uri"])
-                collection = Collection(collection_name)
-                return {
-                    "name": collection_name,
-                    "num_entities": collection.num_entities,
-                    "schema": collection.schema.to_dict()
-                }
-            finally:
-                connections.disconnect("default")
-        return {}

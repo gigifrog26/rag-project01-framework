@@ -3,11 +3,28 @@ from typing import Dict, Any
 
 class VectorDBProvider(str, Enum):
     MILVUS = "milvus"
-    # More providers can be added later
+    CHROMA = "chroma"  # 新增Chroma支持
+
+# 添加Chroma配置
+CHROMA_CONFIG = {
+    "persist_directory": "03-vector-store/chroma",
+    "index_types": {
+        "hnsw": "HNSW",
+        "flat": "FLAT"
+    },
+    "index_params": {
+        "hnsw": {
+            "M": 16,
+            "efConstruction": 200
+        },
+        "flat": {}
+    }
+}
 
 # 可以在这里添加其他配置相关的内容
 MILVUS_CONFIG = {
-    "uri": "03-vector-store/langchain_milvus.db",
+    # "uri": "03-vector-store/langchain_milvus.db",
+    "uri": "http://localhost:19530",
     "index_types": {
         "flat": "FLAT",
         "ivf_flat": "IVF_FLAT",
@@ -23,4 +40,4 @@ MILVUS_CONFIG = {
             "efConstruction": 500
         }
     }
-} 
+}

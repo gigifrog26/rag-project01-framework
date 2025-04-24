@@ -204,7 +204,10 @@ const Indexing = () => {
               <label className="block text-sm font-medium mb-1">Vector Database</label>
               <select
                 value={selectedProvider}
-                onChange={(e) => setSelectedProvider(e.target.value)}
+                onChange={(e) => {
+                  setSelectedProvider(e.target.value);
+                  setVectorDb(e.target.value);  // 同时更新vectorDb
+                }}
                 className="block w-full p-2 border rounded"
               >
                 {providers.map(provider => (

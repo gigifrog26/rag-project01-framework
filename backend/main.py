@@ -252,7 +252,9 @@ async def index_embeddings(data: dict):
         embedding_file = os.path.join("02-embedded-docs", file_id)
         if not os.path.exists(embedding_file):
             raise FileNotFoundError(f"Embedding file not found: {file_id}")
-            
+
+        logger.info(f"DB Provider: {vector_db}, index_mode: {index_mode}")  
+
         config = VectorDBConfig(provider=vector_db, index_mode=index_mode)
         vector_store_service = VectorStoreService()
         result = vector_store_service.index_embeddings(embedding_file, config)
@@ -301,7 +303,8 @@ async def search(
     collection_id: str = Body(...),
     top_k: int = Body(3),
     threshold: float = Body(0.7),
-    word_count_threshold: int = Body(100)
+    word_count_threshold: int = Body(100),
+    db_provider: str = Body(VectorDBProvider.MILVUS.value)
 ):
     """执行向量搜索"""
     try:
@@ -318,11 +321,13 @@ async def search(
             collection_id=collection_id,
             top_k=top_k,
             threshold=threshold,
-            word_count_threshold=word_count_threshold
+            word_count_threshold=word_count_threshold,
+            db_provider=db_provider
         )
         
         # Log the search results
-        logger.info(f"Search response: {results}")
+        hits = results["results"]
+        logger.info(f"Search response: {hits}")
         
         return {"results": results}
     except Exception as e:

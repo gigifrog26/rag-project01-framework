@@ -53,7 +53,8 @@ const Search = () => {
         top_k: topK,
         threshold,
         word_count_threshold: wordCountThreshold,
-        save_results: saveResults
+        save_results: saveResults,
+        db_provider: selectedProvider
       };
       
       console.log('发送搜索请求:', searchParams);
